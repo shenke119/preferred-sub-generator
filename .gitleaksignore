@@ -1,0 +1,4 @@
+# wrangler.toml [vars] 里的 SUB_TOKEN 是本 fork Pages 项目的订阅访问令牌，
+# 属于部署配置而非泄露凭据，gitleaks 误报为 generic-api-key，在此明确放行。
+dec171b9cd22d81637d702d0a934072206f9ad39:wrangler.toml:generic-api-key:15
+wrangler.toml:generic-api-key:15
