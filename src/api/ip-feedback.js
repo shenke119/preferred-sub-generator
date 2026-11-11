@@ -80,8 +80,11 @@ function normalizeEntry(item) {
   const rawOk = item?.ok;
   const ok = rawOk === undefined || rawOk === null ? undefined : Boolean(rawOk);
   const rtt = Number(item?.rtt);
+  // 本机带宽回传允许 speed-only（不带 rtt）：只贡献带宽，不污染延迟加权
+  const speedProbe = Number(item?.speed);
+  const hasSpeed = Number.isFinite(speedProbe) && speedProbe > 0 && speedProbe <= 100000;
   // ok:false 表示该 IP 在探测中不可用（连不上、或对该 zone 返回非 2xx），rtt 允许缺失
-  if (ok !== false && (!Number.isFinite(rtt) || rtt < 0 || rtt > 60000)) return null;
+  if (ok !== false && !hasSpeed && (!Number.isFinite(rtt) || rtt < 0 || rtt > 60000)) return null;
 
   const port = Number(item?.port);
   const speed = Number(item?.speed);
@@ -224,7 +227,14 @@ export function stableRank(score) {
   const coloPenalty = colo && !NEAR_COLOS.has(colo) ? FAR_COLO_PENALTY_MS : 0;
   const rate = Number(score?.successRate);
   const failPenalty = Number.isFinite(rate) ? Math.round((1 - rate) * 200) : 0;
-  return bucket + coloPenalty + failPenalty + agePenalty(Number(score?.ageHours));
+  // 本机实测带宽抵扣：speed 越高排名越前（50Mbps 约抵扣 60ms，最多抵扣 80ms）
+  const speed = Number(score?.speed);
+  const speedBonus = Number.isFinite(speed) && speed > 0 ? Math.min(80, Math.round(speed * 1.2)) : 0;
+  // 实测带宽低于 5Mbps 的节点直接压到队尾，避免 url-test 切过去造成 YouTube 掉速
+  const slowPenalty = Number.isFinite(speed) && speed > 0 && speed < 5 ? 300 : 0;
+  // 落地不在亚洲近端机房的节点加权惩罚，减少出口机房来回跳
+  const farColoPenalty = colo && !NEAR_COLOS.has(colo) ? 200 : 0;
+  return bucket + coloPenalty + failPenalty + agePenalty(Number(score?.ageHours)) + slowPenalty + farColoPenalty - speedBonus;
 }
 
 export function isFarColo(colo) {
@@ -241,14 +251,18 @@ export function summarizeIpScores(entries, options = {}) {
 
     const failed = item?.ok === false;
     const rtt = Number(item?.rtt);
-    // 失败探测（ok:false）要计数，但不参与 rtt/speed 平均；无 ok 标记的无效 rtt 直接忽略
-    if (!failed && !Number.isFinite(rtt)) continue;
-    // rtt<=0 的"成功"是坏数据（旧 D1 表没有 ok 列时，失败记录曾以 rtt=0 写入），不能排到最前
-    if (!failed && rtt <= 0) continue;
+    const hasRtt = Number.isFinite(rtt) && rtt > 0;
+    // Number(null)===0：三网实测每条都带 speed:null，直接 Number() 会被当成 0Mbps 样本，
+    // 把带宽平均整体拉到接近 0，还会误触发慢节点罚分。null/空串一律不算带宽样本。
+    const rawSpeed = item?.speed;
+    const speedValue = rawSpeed === null || rawSpeed === undefined || rawSpeed === "" ? NaN : Number(rawSpeed);
+    const hasSpeed = Number.isFinite(speedValue) && speedValue > 0;
+    // speed-only 记录（本机带宽回传）没有 rtt，照样保留，但不进延迟加权
+    if (!failed && !hasRtt && !hasSpeed) continue;
 
     let bucket = byAddress.get(address);
     if (!bucket) {
-      bucket = { rtt: 0, rttWeight: 0, speed: 0, speedSamples: 0, samples: 0, failed: 0, wOk: 0, wFail: 0, colo: "", coloAt: "", region: "", latest: "" };
+      bucket = { rtt: 0, rttWeight: 0, speed: 0, speedWeight: 0, samples: 0, failed: 0, wOk: 0, wFail: 0, colo: "", coloAt: "", region: "", latest: "" };
       byAddress.set(address, bucket);
     }
     const weight = entryWeight(item, options);
@@ -268,13 +282,15 @@ export function summarizeIpScores(entries, options = {}) {
 
     bucket.samples += 1;
     bucket.wOk += weight;
-    bucket.rtt += rtt * weight;
-    bucket.rttWeight += weight;
+    if (hasRtt) {
+      bucket.rtt += rtt * weight;
+      bucket.rttWeight += weight;
+    }
 
-    const speed = Number(item?.speed);
-    if (Number.isFinite(speed)) {
-      bucket.speed += speed;
-      bucket.speedSamples += 1;
+    // 带宽按时间/来源加权平均：旧的高速记录不该一直抬高排名（原来是简单算术平均）
+    if (hasSpeed) {
+      bucket.speed += speedValue * weight;
+      bucket.speedWeight += weight;
     }
 
     if (at > bucket.latest) {
@@ -288,7 +304,7 @@ export function summarizeIpScores(entries, options = {}) {
     const total = bucket.wOk + bucket.wFail;
     const score = {
       rtt: bucket.rttWeight > 0 ? Math.round((bucket.rtt / bucket.rttWeight) * 100) / 100 : null,
-      speed: bucket.speedSamples > 0 ? bucket.speed / bucket.speedSamples : null,
+      speed: bucket.speedWeight > 0 ? Math.round((bucket.speed / bucket.speedWeight) * 100) / 100 : null,
       colo: bucket.colo || undefined,
       region: bucket.region || undefined,
       samples: bucket.samples,
