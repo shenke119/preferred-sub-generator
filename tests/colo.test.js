@@ -40,3 +40,16 @@ test("format edge node name prefers locally measured colo and rtt", () => {
     "🇨🇳 国内 0ms 实测 #3",
   );
 });
+
+test("format edge node name appends locally measured bandwidth only when present", () => {
+  assert.equal(
+    formatEdgeNodeName({ userColo: "HKG", userRtt: 88, userSpeed: 41.79 }, 0),
+    "🇭🇰 香港 HKG 88ms 实测 41.8Mbps #1",
+  );
+  assert.equal(
+    formatEdgeNodeName({ userColo: "LAX", userRtt: 147, userSpeed: 3.05 }, 3),
+    "🇺🇸 美国洛杉矶 LAX 147ms 实测 3.1Mbps #4",
+  );
+  // 没有带宽数据时不写 Mbps，避免冒充实测
+  assert.equal(formatEdgeNodeName({ userColo: "HKG", userRtt: 88 }, 0), "🇭🇰 香港 HKG 88ms 实测 #1");
+});

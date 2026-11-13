@@ -68,5 +68,9 @@ export function formatEdgeNodeName(node, index) {
   const isp = ISP_NAMES[String(node.userRegion || "").toUpperCase().replace(/^CN-/, "")] || "";
   const location = formatColo(node.userColo) || (measured !== null ? (isp ? `🇨🇳 ${isp}` : "🇨🇳 国内") : "🌐 未实测");
   const latency = measured !== null ? ` ${measured}ms 实测` : "";
-  return `${v6Prefix}${location}${latency} #${index + 1}`;
+  // 本机带宽实测（IP_FEEDBACK 的 speed）也印进名字，客户端一眼能看出快慢；
+  // 只有真的测到过带宽才写，没有就不写，避免拿假数据冒充实测。
+  const rawSpeed = Number(node.userSpeed);
+  const bandwidth = Number.isFinite(rawSpeed) && rawSpeed > 0 ? ` ${Math.round(rawSpeed * 10) / 10}Mbps` : "";
+  return `${v6Prefix}${location}${latency}${bandwidth} #${index + 1}`;
 }
